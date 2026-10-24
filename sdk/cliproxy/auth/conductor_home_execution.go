@@ -238,7 +238,8 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 				if countTokens {
 					return executor.CountTokens(executorCtx, preparedAuth, execReq, execOpts)
 				}
-				return executor.Execute(execCtx, preparedAuth, execReq, execOpts)
+				nonStreamBound := m.requestTimeoutsForAttempt(routeModel, execOpts, selection.Provider).NonStream
+				return executeWithRequestTimeout(execCtx, executor, preparedAuth, execReq, execOpts, nonStreamBound)
 			}
 			startHomeExec := time.Now()
 			response, errExecute = execute()

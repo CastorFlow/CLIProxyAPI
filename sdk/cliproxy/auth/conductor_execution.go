@@ -593,7 +593,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
-			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
+			resp, errExec := executeWithRequestTimeout(execCtx, executor, auth, execReq, execOpts, m.requestTimeoutsForAttempt(routeModel, opts, provider).NonStream)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {

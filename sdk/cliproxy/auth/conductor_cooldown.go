@@ -1902,6 +1902,11 @@ func isRequestScopedError(err error) bool {
 	return ok && requestErr != nil && requestErr.IsRequestScoped()
 }
 
+// isRequestTimeoutError reports whether err comes from a configured requests.timeouts bound.
+func isRequestTimeoutError(err error) bool {
+	return IsRequestTimeoutError(err)
+}
+
 func resultErrorFromError(err error) *Error {
 	if err == nil {
 		return nil
@@ -1917,6 +1922,10 @@ func resultErrorFromError(err error) *Error {
 		resultErr.HTTPStatus = statusCodeFromError(err)
 	}
 	switch {
+	case isRequestTimeoutError(err):
+		// The credential answered while the request ran; only the request itself
+		// exceeded a configured bound, so never cool it down.
+		resultErr.Code = requestScopedErrorCode
 	case isExplicitModelNotFoundError(err, ""):
 		if resultErr.Code == "" || resultErr.Code == requestScopedErrorCode {
 			resultErr.Code = "model_not_found"
@@ -1978,6 +1987,9 @@ func isConnectionLifecycleError(err error) bool {
 	}
 	// Client abort and request-scoped timeouts are not credential faults.
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	if IsRequestTimeoutError(err) {
 		return true
 	}
 	return isConnectionLifecycleMessage(err.Error())

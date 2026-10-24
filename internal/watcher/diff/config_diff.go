@@ -97,6 +97,15 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.NonStreamKeepAliveInterval != newCfg.NonStreamKeepAliveInterval {
 		changes = append(changes, fmt.Sprintf("nonstream-keepalive-interval: %d -> %d", oldCfg.NonStreamKeepAliveInterval, newCfg.NonStreamKeepAliveInterval))
 	}
+	if !reflect.DeepEqual(oldCfg.Timeouts, newCfg.Timeouts) {
+		oldTimeouts := oldCfg.Timeouts.Resolve("", nil, nil)
+		newTimeouts := newCfg.Timeouts.Resolve("", nil, nil)
+		changes = append(changes, fmt.Sprintf("requests.timeouts: first-byte %s->%s, idle %s->%s, nonstream %s->%s, rules %d->%d",
+			oldTimeouts.StreamFirstByte, newTimeouts.StreamFirstByte,
+			oldTimeouts.StreamIdle, newTimeouts.StreamIdle,
+			oldTimeouts.NonStream, newTimeouts.NonStream,
+			len(oldCfg.Timeouts.Rules), len(newCfg.Timeouts.Rules)))
+	}
 
 	// Quota-exceeded behavior
 	if oldCfg.QuotaExceeded.SwitchProject != newCfg.QuotaExceeded.SwitchProject {

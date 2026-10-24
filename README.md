@@ -131,6 +131,7 @@ PackyCode provides special discounts for our software users: register using <a h
 - Claude Code support via OAuth login
 - Grok Build support via OAuth login
 - Streaming, non-streaming, and WebSocket responses where supported
+- Configurable upstream request timeouts (stream first-byte, stream idle, non-stream) with per-model/protocol/provider overrides
 - Function calling/tools support
 - Multimodal input support (text and images)
 - Multiple accounts with round-robin load balancing (Gemini, OpenAI, Claude, Grok)

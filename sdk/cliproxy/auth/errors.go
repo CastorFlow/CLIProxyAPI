@@ -30,6 +30,65 @@ const transientTransportErrorCode = ErrorCodeTransientTransport
 // ErrorCodeForceCooldown marks failures that must enforce credential cooldown.
 const ErrorCodeForceCooldown = "force_cooldown"
 
+// ErrorCodeRequestTimeout marks an upstream request that exceeded a configured
+// requests.timeouts bound. These are request-scoped: the credential is healthy,
+// so they must neither cool it down nor trigger credential rotation.
+const ErrorCodeRequestTimeout = "request_timeout"
+
+// requestTimeoutError describes an upstream request that exceeded a configured
+// timeout bound. It is request-scoped and carries the downstream HTTP status.
+type requestTimeoutError struct {
+	cause  error
+	status int
+}
+
+func (e *requestTimeoutError) Error() string {
+	if e == nil || e.cause == nil {
+		return "upstream request timeout"
+	}
+	return e.cause.Error()
+}
+
+func (e *requestTimeoutError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+// IsRequestScoped prevents credential rotation and cooldown on a healthy credential.
+func (e *requestTimeoutError) IsRequestScoped() bool { return true }
+
+// StatusCode reports the downstream HTTP status for the timeout.
+func (e *requestTimeoutError) StatusCode() int {
+	if e == nil || e.status == 0 {
+		return http.StatusGatewayTimeout
+	}
+	return e.status
+}
+
+// NewRequestTimeoutError wraps cause as a request-scoped upstream timeout failure.
+// An empty message falls back to the standard HTTP status text.
+func NewRequestTimeoutError(cause error, message string) error {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = http.StatusText(http.StatusGatewayTimeout)
+	}
+	if cause == nil {
+		cause = errors.New(message)
+	}
+	return &requestTimeoutError{cause: cause, status: http.StatusGatewayTimeout}
+}
+
+// IsRequestTimeoutError reports whether err carries a configured upstream timeout.
+func IsRequestTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var timeoutErr *requestTimeoutError
+	return errors.As(err, &timeoutErr) && timeoutErr != nil
+}
+
 // Error describes an authentication related failure in a provider agnostic format.
 type Error struct {
 	// Code is a short machine readable identifier.

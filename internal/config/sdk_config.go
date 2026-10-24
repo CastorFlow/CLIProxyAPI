@@ -51,6 +51,10 @@ type SDKConfig struct {
 	// 0, and values beyond the representable duration range saturate.
 	TLSHandshakeTimeoutSeconds int `yaml:"tls-handshake-timeout-seconds" json:"tls-handshake-timeout-seconds"`
 
+	// Timeouts configures upstream request timeouts. Values are global defaults;
+	// entries under rules may override them for matching requests.
+	Timeouts RequestTimeoutConfig `yaml:"timeouts,omitempty" json:"timeouts,omitempty"`
+
 	// DisableImageGeneration controls whether the built-in image_generation tool is injected/allowed.
 	//
 	// Supported values:

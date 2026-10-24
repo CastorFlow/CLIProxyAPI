@@ -251,6 +251,32 @@ requests:
   #   bootstrap-retries: 1          # Default: 0 (disabled). Retries before first byte is sent.
   #   send-keepalive-before-ft: false # Default: false. When true and keepalive-seconds > 0, send SSE heartbeats before the first token.
 
+  # Upstream request timeouts. Omitting a value uses its default.
+  # A timeout that fires ends the request: non-streaming requests return 504, a stream
+  # that has not produced its first data chunk returns 504, and a stream that goes silent
+  # mid-response emits a stream error event. Timeout failures are request-scoped: they
+  # never cool down or rotate the credential. Keep-alive/control frames the client never
+  # sees do not count as data, so a stalled stream still trips the bounds.
+  # Note: the default 60s first-byte bound can end a long-preamble request on providers
+  # that deliver no data for over a minute (for example a Codex websocket that only sends
+  # heartbeats during a long reasoning phase); raise it for those models with a rule.
+  # timeouts:
+  #   # Maximum wait for the first data chunk of a streaming request. Range 1-120, default 60.
+  #   stream-first-byte-seconds: 60
+  #   # Maximum gap between streaming data chunks. Range 60-600; 0 disables; default 300.
+  #   stream-idle-seconds: 300
+  #   # Total time allowed for a non-streaming request. Range 60-1200, default 600.
+  #   nonstream-seconds: 600
+  #   # Per-model/protocol/provider overrides. The first matching rule wins; fields it
+  #   # omits fall back to the global values above. Model patterns support '*' wildcards.
+  #   rules:
+  #     - models: ["claude-*"]
+  #       protocols: ["claude"]        # openai, claude, gemini, codex, antigravity, ...
+  #       providers: ["claude"]        # claude, codex, gemini, vertex, aistudio, xai, ...
+  #       stream-first-byte-seconds: 90
+  #       stream-idle-seconds: 0
+  #       nonstream-seconds: 1200
+
   # Optional payload configuration
   # payload:
   #   default: # Default rules only set parameters when they are missing in the payload.

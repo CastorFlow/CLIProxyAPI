@@ -88,30 +88,15 @@ func validateStreamResult(result *cliproxyexecutor.StreamResult, err error) (*cl
 	return result, nil
 }
 
-func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamChunk) ([]cliproxyexecutor.StreamChunk, bool, error) {
+func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamChunk, timeouts *streamTimeoutTracker) ([]cliproxyexecutor.StreamChunk, bool, error) {
 	if ch == nil {
 		return nil, true, nil
 	}
 	buffered := make([]cliproxyexecutor.StreamChunk, 0, 1)
 	for {
-		var (
-			chunk cliproxyexecutor.StreamChunk
-			ok    bool
-		)
-		if ctx != nil {
-			// Prefer a chunk that is already available so an upstream error delivered together
-			// with a context cancellation is not discarded.
-			select {
-			case chunk, ok = <-ch:
-			default:
-				select {
-				case <-ctx.Done():
-					return nil, false, ctx.Err()
-				case chunk, ok = <-ch:
-				}
-			}
-		} else {
-			chunk, ok = <-ch
+		chunk, ok, errTimeout := timeouts.read(ctx, ch)
+		if errTimeout != nil {
+			return nil, false, errTimeout
 		}
 		if !ok {
 			return buffered, true, nil
@@ -119,6 +104,7 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
 		if chunk.Err != nil {
 			return nil, false, chunk.Err
 		}
+		timeouts.observeData(chunk)
 		buffered = append(buffered, chunk)
 		if len(chunk.Payload) > 0 {
 			return buffered, false, nil
@@ -142,7 +128,7 @@ func (m *Manager) recordCanceledUpstreamCooldown(ctx context.Context, auth *Auth
 	m.recordExecutionResult(context.WithoutCancel(ctx), result, auth, ephemeral)
 }
 
-func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel, routeModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, aliasResult OAuthModelAliasResult, ephemeralResult bool, opts cliproxyexecutor.Options, executionSeq uint64) *cliproxyexecutor.StreamResult {
+func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel, routeModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, aliasResult OAuthModelAliasResult, ephemeralResult bool, opts cliproxyexecutor.Options, executionSeq uint64, timeouts *streamTimeoutTracker) *cliproxyexecutor.StreamResult {
 	out := make(chan cliproxyexecutor.StreamChunk)
 	streamStart := time.Now()
 	go func() {
@@ -208,7 +194,22 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				return
 			}
 		}
-		for chunk := range remaining {
+		// Reads are deliberately independent of ctx: this loop is the single
+		// consumer of the provider stream and keeps observing it until it closes,
+		// so a terminal error chunk is still recorded after cancellation.
+		for {
+			chunk, ok, errTimeout := timeouts.read(nil, remaining)
+			if errTimeout != nil {
+				// Report the timeout as the attempt's terminal failure, then keep
+				// draining so the upstream producer can observe the attempt context.
+				emit(cliproxyexecutor.StreamChunk{Err: errTimeout})
+				discardStreamChunks(remaining)
+				return
+			}
+			if !ok {
+				break
+			}
+			timeouts.observeData(chunk)
 			if ok := emit(chunk); !ok {
 				discardStreamChunks(remaining)
 				return
@@ -263,6 +264,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
 		executionSeq := m.nextExecutionSeq()
 		startStream := time.Now()
+		streamTimeouts := newStreamTimeoutTracker(m.requestTimeoutsForAttempt(routeModel, execOpts, provider))
 		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, execOpts)
 		errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
 		if hasUpstreamExecutionAttempt(errStream) {
@@ -342,7 +344,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			continue
 		}
 
-		buffered, closed, bootstrapErr := readStreamBootstrap(ctx, streamResult.Chunks)
+		buffered, closed, bootstrapErr := readStreamBootstrap(ctx, streamResult.Chunks, streamTimeouts)
 		bootstrapErr = markUpstreamExecutionAttemptFromContext(ctx, bootstrapErr)
 		if hasUpstreamExecutionAttempt(bootstrapErr) {
 			upstreamErr = newStreamBootstrapError(bootstrapErr, streamResult.Headers)
@@ -353,7 +355,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				discardStreamChunks(streamResult.Chunks)
 				return nil, errCtx
 			}
-			if allowRetry && !ephemeralResult {
+			// A configured timeout is request-scoped and must not trigger the
+			// credential-refresh retry below.
+			if allowRetry && !ephemeralResult && !isRequestTimeoutError(bootstrapErr) {
 				alreadyTried := didRefreshOnUnauthorized
 				refreshed, okRefresh := m.tryRefreshAfterUnauthorized(newUpstreamAttemptContext(ctx), auth, bootstrapErr, alreadyTried, execOpts.Headers)
 				if okRefresh {
@@ -378,7 +382,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 						streamResult = &cliproxyexecutor.StreamResult{}
 					} else {
 						streamResult = retryStream
-						buffered, closed, bootstrapErr = readStreamBootstrap(ctx, streamResult.Chunks)
+						buffered, closed, bootstrapErr = readStreamBootstrap(ctx, streamResult.Chunks, streamTimeouts)
 						bootstrapErr = markUpstreamExecutionAttemptFromContext(ctx, bootstrapErr)
 						if bootstrapErr != nil {
 							warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startRetry), bootstrapErr)
@@ -484,7 +488,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			remaining = closedCh
 		}
 		attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, execModel, aliasResult)
-		return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, routeModel, streamResult.Headers, buffered, remaining, attemptAliasResult, ephemeralResult, execOpts, executionSeq), nil
+		return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, routeModel, streamResult.Headers, buffered, remaining, attemptAliasResult, ephemeralResult, execOpts, executionSeq, streamTimeouts), nil
 	}
 	if lastErr == nil {
 		lastErr = &Error{Code: "auth_not_found", Message: "no upstream model available"}
