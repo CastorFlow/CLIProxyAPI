@@ -33,6 +33,22 @@ func (w *Watcher) start(ctx context.Context) error {
 	}
 	log.Debugf("watching config file: %s", w.configPath)
 
+	// Also watch the config file's directory. A config is commonly replaced by
+	// writing a temporary file and renaming it over the target (CPA's own saves
+	// and external editors such as the KeyManageCenter panel), and a watch held
+	// on the file resolves to its inode: the rename leaves it attached to the
+	// replaced inode, so no further event for the config path is ever delivered.
+	// The directory watch keeps reporting the Create event of the replacement.
+	// This is best effort; in-place writes keep working through the file watch.
+	configDir := filepath.Dir(w.configPath)
+	if configDir != "" {
+		if errAddConfigDir := w.watcher.Add(configDir); errAddConfigDir != nil {
+			log.Debugf("failed to watch config directory %s: %v", configDir, errAddConfigDir)
+		} else {
+			log.Debugf("watching config directory: %s", configDir)
+		}
+	}
+
 	if errAddAuthDir := w.watcher.Add(w.authDir); errAddAuthDir != nil {
 		log.Errorf("failed to watch auth directory %s: %v", w.authDir, errAddAuthDir)
 		return errAddAuthDir
